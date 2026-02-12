@@ -7,11 +7,10 @@
     mid: 850,
     long: 1600,
     lovPickTimeoutMs: 30000,
-    folderCodeRegex: /\b(\d{3}\.\d{2})\b/,
     verbose: true
   };
 
-  let maxDocs = 500;
+  let maxDocs = 50;
   let speed = 1.0;
 
   const log = (...a) => CFG.verbose && console.log("[BN]", ...a);
@@ -32,13 +31,28 @@
   function waitForDomQuiet({ quietMs = 350, timeoutMs = 12000 } = {}) {
     return new Promise((resolve, reject) => {
       let tDone = null;
-      const tTimeout = setTimeout(() => { obs.disconnect(); reject(new Error("timeout")); }, timeoutMs);
-
-      const done = () => { clearTimeout(tTimeout); obs.disconnect(); resolve(true); };
-      const bump = () => { if (tDone) clearTimeout(tDone); tDone = setTimeout(done, quietMs); };
-
+      const bump = () => {
+        if (tDone) clearTimeout(tDone);
+        tDone = setTimeout(done, quietMs);
+      };
       const obs = new MutationObserver(bump);
-      obs.observe(document.documentElement, { subtree: true, childList: true, attributes: true, characterData: true });
+      const tTimeout = setTimeout(() => {
+        obs.disconnect();
+        reject(new Error("timeout"));
+      }, timeoutMs);
+
+      const done = () => {
+        clearTimeout(tTimeout);
+        obs.disconnect();
+        resolve(true);
+      };
+
+      obs.observe(document.documentElement, {
+        subtree: true,
+        childList: true,
+        attributes: true,
+        characterData: true
+      });
 
       bump();
     });
@@ -59,8 +73,10 @@
     const r = el.getBoundingClientRect();
     const x = r.left + Math.min(Math.max(r.width / 2, 5), r.width - 5);
     const y = r.top + Math.min(Math.max(r.height / 2, 5), r.height - 5);
-    ["mousemove","mouseover","mouseenter","mousedown","mouseup","click"].forEach((type) => {
-      el.dispatchEvent(new MouseEvent(type, { bubbles:true, cancelable:true, view:window, clientX:x, clientY:y }));
+    ["mousemove", "mouseover", "mouseenter", "mousedown", "mouseup", "click"].forEach((type) => {
+      el.dispatchEvent(
+        new MouseEvent(type, { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y })
+      );
     });
   }
 
@@ -96,19 +112,33 @@
       if (!map.has(t)) map.set(t, p);
     }
     const uniq = [...map.values()];
-    uniq.sort((a,b) => parseInt(a.textContent,10) - parseInt(b.textContent,10));
+    uniq.sort((a, b) => parseInt(a.textContent, 10) - parseInt(b.textContent, 10));
     return uniq;
   }
 
   function getRowsOnPage() {
-    return [...document.querySelectorAll("tr.ui-widget-content")].filter(isVisible);
+    const tbody = document.getElementById("mainInboxForm:inboxDataTable_data");
+    if (!tbody) return [];
+
+    const rows = [...tbody.querySelectorAll("tr.ui-datatable-selectable[data-ri]")];
+
+    return rows.filter((r) => {
+      if (!isVisible(r)) return false;
+      const hasKonu = !!r.querySelector(".ui-inbox-satir1");
+      const hasKayit = (r.innerText || "").includes("Kayıt Tarihi / Sayı:");
+      return hasKonu && hasKayit;
+    });
   }
 
-  function extractFolderCodeFromText() {
-    const txt = document.body ? document.body.innerText : "";
-    const m = txt.match(CFG.folderCodeRegex);
-    return m ? m[1] : null;
-  }
+  // ✅ KODU SADECE TIKLANAN SATIRDAN ÇEK (E-...-803-... => 803)
+  function extractFolderCodeFromRow(row) {
+  if (!row) return null;
+
+  const txt = row.innerText || "";
+
+  const m = txt.match(/E-\d+-((?:\d{3}(?:\.\d{2}){0,2}))-\d+/);
+  return m ? m[1] : null;
+}
 
   function findPreviewCloseButton() {
     const a = [...document.querySelectorAll("button[aria-label='Evrak Kapat']")].find(isVisible);
@@ -124,39 +154,93 @@
     return document.getElementById("mainPreviewForm:onaysizKapatId");
   }
 
+  // ✅ LOV Açık mı? Değilse input yanındaki trigger’a tıkla
+  async function ensureLovOpen() {
+    const rootLi = document.getElementById("mainPreviewForm:klasorLov_id:lovTree:0");
+    if (rootLi && isVisible(rootLi)) return true;
+
+    const input = findLovInput();
+    if (!input) return false;
+
+    const container = input.closest(".ui-lov") || input.closest("span") || input.parentElement;
+    const trigger = (container && container.querySelector("button, a")) || document.querySelector("[id*='klasorLov_id'][onclick]");
+
+    if (trigger) {
+      await click(trigger, { afterWait: true });
+      await sleep(300);
+      await waitForDomQuiet({ quietMs: 300, timeoutMs: 8000 }).catch(() => {});
+    }
+
+    const rootLi2 = document.getElementById("mainPreviewForm:klasorLov_id:lovTree:0");
+    return !!(rootLi2 && isVisible(rootLi2));
+  }
+
   function findTreeClickableByCode(code) {
     const rootLi = document.getElementById("mainPreviewForm:klasorLov_id:lovTree:0");
     if (!rootLi) return null;
 
-    const treeContainer = rootLi.closest("ul")?.parentElement || rootLi.parentElement || rootLi;
+    const treeContainer =
+      rootLi.closest(".ui-tree") ||
+      rootLi.closest("ul")?.parentElement ||
+      rootLi.parentElement ||
+      rootLi;
+
     const nodes = [...treeContainer.querySelectorAll("li.ui-treenode.lovTreeNode")];
 
-    const li =
-      nodes.find(n => (n.textContent || "").includes(`[Klasör] ${code}`)) ||
-      nodes.find(n => (n.textContent || "").includes(code));
+    const codeStr = String(code);
+    // 803 veya 803.00 gibi varyasyonlar
+    const re = new RegExp(`\\b${codeStr}(?:\\.\\d{2})?\\b`);
+
+    let li =
+      nodes.find((n) => (n.textContent || "").includes(`[Klasör] ${codeStr}`)) ||
+      nodes.find((n) => re.test((n.textContent || "")));
 
     if (!li) return null;
 
-    return (
+    const label =
+      li.querySelector("span.ui-treenode-label") ||
+      li.querySelector(".expandCollapseLovItem") ||
       li.querySelector("span.ui-treenode-content.ui-tree-selectable") ||
       li.querySelector("span.ui-treenode-content") ||
-      li.querySelector(".expandCollapseLovItem") ||
-      li
-    );
+      li;
+
+    return { li, target: label };
   }
 
   async function pickTreeByCode(code) {
     const t0 = Date.now();
+
+    await waitForDomQuiet({ quietMs: 300, timeoutMs: 8000 }).catch(() => {});
+    await sleep(350);
+
     while (!STOP && Date.now() - t0 < CFG.lovPickTimeoutMs) {
       await sleep(250);
-      const clickable = findTreeClickableByCode(code);
-      if (clickable) {
-        await click(clickable, { afterWait: true });
-        await sleep(160);
-        await click(clickable, { afterWait: true });
+
+      const found = findTreeClickableByCode(code);
+      if (!found) continue;
+
+      const { li, target } = found;
+
+      (target || li).scrollIntoView({ block: "center", inline: "center" });
+      await sleep(120);
+
+      await click(target || li, { afterWait: false });
+      await sleep(180);
+      await click(target || li, { afterWait: false });
+      await sleep(250);
+
+      const selected =
+        li.getAttribute("aria-selected") === "true" ||
+        li.classList.contains("ui-treenode-selected") ||
+        li.classList.contains("ui-treenode-highlight") ||
+        li.querySelector(".ui-treenode-content")?.getAttribute("aria-selected") === "true";
+
+      if (selected) {
+        await waitForDomQuiet({ quietMs: 350, timeoutMs: 12000 }).catch(() => {});
         return true;
       }
     }
+
     return false;
   }
 
@@ -164,23 +248,25 @@
     if (STOP) return false;
 
     log(`Satır #${idx} tıklanıyor...`);
-    await click(row, { afterWait: true });
+    const clickTarget =
+    row.querySelector(".searchText") ||
+    row.querySelector("h3.ui-inbox-satir1") ||
+    row;
+
+    await click(clickTarget, { afterWait: true });
     await sleep(CFG.mid);
 
-    let code = extractFolderCodeFromText();
-    if (!code) {
-      await waitForDomQuiet({ quietMs: 350, timeoutMs: 9000 }).catch(() => {});
-      code = extractFolderCodeFromText();
-    }
+    // ✅ SADECE ROW-SCOPED KOD
+    let code = extractFolderCodeFromRow(row);
 
     if (!code) {
-      warn("Klasör kodu bulunamadı, atlanıyor.");
-      const closeBtn = findPreviewCloseButton();
-      if (closeBtn) await click(closeBtn, { afterWait: true });
+      warn("Satırdan kod çekilemedi (row-scoped). Atlanıyor.");
+      const closeBtn0 = findPreviewCloseButton();
+      if (closeBtn0) await click(closeBtn0, { afterWait: true });
       return true;
     }
 
-    log("Bulunan kod:", code);
+    log("Bulunan kod (row-scoped):", code);
 
     const closeBtn = await waitFor(() => {
       const b = findPreviewCloseButton();
@@ -197,13 +283,29 @@
     if (!lovInput) return false;
 
     fireInput(lovInput, code);
-    lovInput.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
-    lovInput.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "Enter" }));
+
+    // ✅ Enter tetiklemesini güçlendir
+    lovInput.dispatchEvent(
+      new KeyboardEvent("keydown", { bubbles: true, key: "Enter", code: "Enter", keyCode: 13, which: 13 })
+    );
+    lovInput.dispatchEvent(
+      new KeyboardEvent("keyup", { bubbles: true, key: "Enter", code: "Enter", keyCode: 13, which: 13 })
+    );
+
+    await sleep(600);
+    await waitForDomQuiet({ quietMs: 350, timeoutMs: 12000 }).catch(() => {});
+
+    // ✅ LOV açık değilse aç
+    const lovOk = await ensureLovOpen();
+    if (!lovOk) {
+      warn("LOV tree açılamadı (root görünmüyor).");
+      return true;
+    }
 
     const picked = await pickTreeByCode(code);
     if (!picked) {
       warn("Tree seçilemedi:", code);
-      return true; // atla devam
+      return true;
     }
 
     const finalBtn = await waitFor(() => {
@@ -225,7 +327,7 @@
 
     try {
       const st = await chrome.storage.local.get(["bn_maxDocs", "bn_speed"]);
-      maxDocs = st.bn_maxDocs ?? 500;
+      maxDocs = st.bn_maxDocs ?? 50;
       speed = st.bn_speed ?? 1.0;
     } catch (_) {}
 
@@ -243,17 +345,19 @@
         await sleep(CFG.mid);
       }
 
-      let rows = getRowsOnPage();
-      for (let i = 0; i < rows.length && !STOP; i++) {
-        if (processed >= maxDocs) { STOP = true; break; }
+      while (!STOP && processed < maxDocs) {
+  let rows = getRowsOnPage();
+  if (!rows.length) break;
 
-        rows = getRowsOnPage();
-        const row = rows[i];
-        if (!row) continue;
+  const row = rows[0]; // ✅ her zaman en üstteki evrak
+  processed++;
 
-        processed++;
-        const ok = await processOneRow(row, processed);
-        if (!ok) { STOP = true; break; }
+  const ok = await processOneRow(row, processed);
+  if (!ok) { STOP = true; break; }
+
+  // küçük bir bekleme bazen PrimeFaces refresh için şart
+  await sleep(CFG.mid);
+
       }
 
       pages = getPaginatorPages();
