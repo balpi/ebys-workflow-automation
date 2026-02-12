@@ -1,4 +1,5 @@
 # EBYS Workflow Automation
+https://youtu.be/IXlosryuKOM For learning
 
 A production-grade Chrome extension that automates repetitive document workflows
 within the EBYS web application.
@@ -23,7 +24,7 @@ within the EBYS web application.
 - Does not collect or transmit any data
 
 ## Chrome Web Store
-(Will be added after publication)
+https://chromewebstore.google.com/detail/okgelohhbnhpdjicbejlgionechblmef?utm_source=item-share-cb
 
 ## License
 MIT
