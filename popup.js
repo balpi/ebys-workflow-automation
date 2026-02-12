@@ -12,12 +12,12 @@ function setStatus(running) {
 async function loadState() {
   const st = await chrome.storage.local.get(["bn_running", "bn_maxDocs", "bn_speed"]);
   setStatus(!!st.bn_running);
-  document.getElementById("maxDocs").value = st.bn_maxDocs ?? 500;
+  document.getElementById("maxDocs").value = st.bn_maxDocs ?? 50;
   document.getElementById("speed").value = st.bn_speed ?? 1.0;
 }
 
 async function saveConfigFromUI() {
-  const bn_maxDocs = parseInt(document.getElementById("maxDocs").value || "500", 10);
+  const bn_maxDocs = parseInt(document.getElementById("maxDocs").value || "50", 10);
   const bn_speed = parseFloat(document.getElementById("speed").value || "1.0");
   await chrome.storage.local.set({ bn_maxDocs, bn_speed });
 }
